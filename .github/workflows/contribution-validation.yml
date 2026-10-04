@@ -1,0 +1,53 @@
+name: Validate upstream contributions on Windows
+
+on:
+  push:
+    branches: [ci/contribution-validation]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-validation:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Build and test each contribution and their combined result
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $branches = @(
+            'contribute/windows-window-creation',
+            'contribute/quota-cache-freshness',
+            'contribute/multi-monitor-docking',
+            'contribute/recent-use-and-opacity',
+            'ci/contribution-validation'
+          )
+          foreach ($branch in $branches) {
+            Write-Output "::group::$branch"
+            git checkout --detach "origin/$branch"
+            if ($LASTEXITCODE -ne 0) { throw "Checkout failed: $branch" }
+            npm run build
+            if ($LASTEXITCODE -ne 0) { throw "Frontend build failed: $branch" }
+            $package = Get-Content package.json -Raw | ConvertFrom-Json
+            if ($package.scripts.'test:quota') {
+              npm run test:quota
+              if ($LASTEXITCODE -ne 0) { throw "Quota regression tests failed: $branch" }
+            }
+            cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+            if ($LASTEXITCODE -ne 0) { throw "Rust tests failed: $branch" }
+            Write-Output "VALIDATED $branch $(git rev-parse HEAD)"
+            Write-Output '::endgroup::'
+          }
